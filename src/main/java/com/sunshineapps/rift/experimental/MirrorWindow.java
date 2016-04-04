@@ -157,8 +157,8 @@ public final class MirrorWindow {
         executorST.shutdown();
         glfwDestroyWindow(window);
         glfwTerminate();
-        keyfun.release();
-        errorfun.release();
+        keyfun.free();
+        errorfun.free();
     }
 
 }

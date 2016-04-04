@@ -9,7 +9,7 @@ import org.lwjgl.system.Library;
 
 
 public final class Client implements ClientCallback {
-    private RiftWindow0800 rift;
+    private RiftWindow130 rift;
     private MirrorWindow mirrorWindow;
     private final FPSCounter fpsCounter = new FPSCounter();
     private final Scene scene2 = new SceneGlobe();
@@ -25,7 +25,7 @@ public final class Client implements ClientCallback {
         
         // step 0 - create rift
         System.out.println("step 0 - create rift");
-        rift = new RiftWindow0800(this);
+        rift = new RiftWindow130(this);
      
         // step 8 - create mirror window
         System.out.println("step 8 - create mirror window");
