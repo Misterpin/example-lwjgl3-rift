@@ -13,7 +13,6 @@ import static org.lwjgl.opengl.GL11.GL_LIGHTING;
 import static org.lwjgl.opengl.GL11.GL_MODELVIEW;
 import static org.lwjgl.opengl.GL11.GL_POSITION;
 import static org.lwjgl.opengl.GL11.GL_PROJECTION;
-import static org.lwjgl.opengl.GL11.GL_RGBA;
 import static org.lwjgl.opengl.GL11.GL_SPECULAR;
 import static org.lwjgl.opengl.GL11.GL_SPOT_CUTOFF;
 import static org.lwjgl.opengl.GL11.GL_TEXTURE_2D;
@@ -32,7 +31,6 @@ import static org.lwjgl.opengl.GL11.glViewport;
 import static org.lwjgl.ovr.OVR.ovrEye_Left;
 import static org.lwjgl.ovr.OVR.ovrEye_Right;
 import static org.lwjgl.ovr.OVR.ovrFORMAT_R8G8B8A8_UNORM_SRGB;
-import static org.lwjgl.ovr.OVR.ovrFalse;
 import static org.lwjgl.ovr.OVR.ovrHmd_None;
 import static org.lwjgl.ovr.OVR.ovrLayerFlag_TextureOriginAtBottomLeft;
 import static org.lwjgl.ovr.OVR.ovrLayerType_EyeFov;
@@ -43,7 +41,6 @@ import static org.lwjgl.ovr.OVR.ovrPerfHud_Off;
 import static org.lwjgl.ovr.OVR.ovrPerfHud_PerfSummary;
 import static org.lwjgl.ovr.OVR.ovrPerfHud_VersionInfo;
 import static org.lwjgl.ovr.OVR.ovrTexture_2D;
-import static org.lwjgl.ovr.OVR.ovrTrue;
 import static org.lwjgl.ovr.OVR.ovr_CommitTextureSwapChain;
 import static org.lwjgl.ovr.OVR.ovr_Create;
 import static org.lwjgl.ovr.OVR.ovr_Destroy;
@@ -63,10 +60,11 @@ import static org.lwjgl.ovr.OVR.ovr_SetInt;
 import static org.lwjgl.ovr.OVR.ovr_Shutdown;
 import static org.lwjgl.ovr.OVR.ovr_SubmitFrame;
 import static org.lwjgl.ovr.OVRErrorCode.ovrSuccess;
-import static org.lwjgl.ovr.OVRErrorCode.ovrSuccess_NotVisible;
 import static org.lwjgl.ovr.OVRKeys.OVR_KEY_EYE_HEIGHT;
 import static org.lwjgl.ovr.OVRUtil.ovr_Detect;
-import static org.lwjgl.system.MemoryUtil.*;
+import static org.lwjgl.system.MemoryUtil.memASCII;
+import static org.lwjgl.system.MemoryUtil.memAllocPointer;
+import static org.lwjgl.system.MemoryUtil.memFree;
 
 import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
@@ -82,7 +80,6 @@ import org.lwjgl.ovr.OVRDetectResult;
 import org.lwjgl.ovr.OVREyeRenderDesc;
 import org.lwjgl.ovr.OVRFovPort;
 import org.lwjgl.ovr.OVRGL;
-import org.lwjgl.ovr.OVRGLTexture;
 import org.lwjgl.ovr.OVRGraphicsLuid;
 import org.lwjgl.ovr.OVRHmdDesc;
 import org.lwjgl.ovr.OVRInitParams;
@@ -104,7 +101,7 @@ public final class RiftWindow130 {
     private final ClientCallback callback;
     public static final boolean displayMirror = true;
     
-    private long hmd;
+    private long session;
     private OVRHmdDesc hmdDesc;
     private int resolutionW;                            //pixels rift
     private int resolutionH;
@@ -114,7 +111,6 @@ public final class RiftWindow130 {
     private final OVRPosef eyePoses[] = new OVRPosef[2];
     private final OVREyeRenderDesc eyeRenderDesc[] = new OVREyeRenderDesc[2];
     private long chain;
-    private int texturesPerEyeCount;
     private PointerBuffer layers;
     private OVRLayerEyeFov layer0;
     private int textureW;
@@ -123,8 +119,7 @@ public final class RiftWindow130 {
     private int perfHUD;
     
     //OpenGL
-    private FrameBuffer fbuffers[][];       //[eye][texturesPerEye]
-
+    private FrameBuffer fbuffers[];
 
     public RiftWindow130(final ClientCallback client) {
         callback = client;
@@ -164,14 +159,14 @@ public final class RiftWindow130 {
             //debug headset is now enabled via the Oculus Configuration util . tools -> Service -> Configure
             return;
         }
-        hmd = pHmd.get(0);
+        session = pHmd.get(0);
         memFree(pHmd);
         luid.free();
 
         // step 3 - hmdDesc queries
         System.out.println("step 3 - hmdDesc queries");
         hmdDesc = OVRHmdDesc.malloc();
-        ovr_GetHmdDesc(hmd, hmdDesc);
+        ovr_GetHmdDesc(session, hmdDesc);
         System.out.println("ovr_GetHmdDesc = " + hmdDesc.ManufacturerString() + " " + hmdDesc.ProductNameString() + " " + hmdDesc.SerialNumberString() + " " + hmdDesc.Type());
         if(hmdDesc.Type() == ovrHmd_None) {
             System.out.println("missing init");
@@ -191,7 +186,7 @@ public final class RiftWindow130 {
             fovPorts[eye] = hmdDesc.DefaultEyeFov(eye);
             System.out.println("eye "+eye+" = "+fovPorts[eye].UpTan() +", "+ fovPorts[eye].DownTan()+", "+fovPorts[eye].LeftTan()+", "+fovPorts[eye].RightTan());
         }
-        playerEyePos = new Vector3f(0.0f, -ovr_GetFloat(hmd, OVR_KEY_EYE_HEIGHT, 1.65f), 0.0f);
+        playerEyePos = new Vector3f(0.0f, -ovr_GetFloat(session, OVR_KEY_EYE_HEIGHT, 1.65f), 0.0f);
 
         // step 4 - tracking - no longer needed as of 0.8.0.0
         
@@ -207,13 +202,13 @@ public final class RiftWindow130 {
         System.out.println("step 6 - render desc");
         for (int eye = 0; eye < 2; eye++) {
             eyeRenderDesc[eye] = OVREyeRenderDesc.malloc();
-            ovr_GetRenderDesc(hmd, eye,  fovPorts[eye], eyeRenderDesc[eye]);
-     //1.3 ipd gone?       System.out.println("ipd eye "+eye+" = "+eyeRenderDesc[eye].HmdToEyeViewOffset().x());
+            ovr_GetRenderDesc(session, eye,  fovPorts[eye], eyeRenderDesc[eye]);
+            System.out.println("ipd eye "+eye+" = "+eyeRenderDesc[eye].HmdToEyeOffset().x());
         }
         
         // step 7 - recenter
         System.out.println("step 7 - recenter");
-        ovr_RecenterTrackingOrigin(hmd);
+        ovr_RecenterTrackingOrigin(session);
     }
 
     public void init() {
@@ -262,11 +257,11 @@ public final class RiftWindow130 {
         float pixelsPerDisplayPixel = 1.0f;
         
         OVRSizei leftTextureSize = OVRSizei.malloc();
-        ovr_GetFovTextureSize(hmd, ovrEye_Left, fovPorts[ovrEye_Left], pixelsPerDisplayPixel, leftTextureSize);
+        ovr_GetFovTextureSize(session, ovrEye_Left, fovPorts[ovrEye_Left], pixelsPerDisplayPixel, leftTextureSize);
         System.out.println("leftTextureSize W="+leftTextureSize.w() +", H="+ leftTextureSize.h());
         
         OVRSizei rightTextureSize = OVRSizei.malloc();
-        ovr_GetFovTextureSize(hmd, ovrEye_Right, fovPorts[ovrEye_Right], pixelsPerDisplayPixel, rightTextureSize);
+        ovr_GetFovTextureSize(session, ovrEye_Right, fovPorts[ovrEye_Right], pixelsPerDisplayPixel, rightTextureSize);
         System.out.println("rightTextureSize W="+rightTextureSize.w() +", H="+ rightTextureSize.h());
         
         textureW = leftTextureSize.w() + rightTextureSize.w();
@@ -287,42 +282,38 @@ public final class RiftWindow130 {
         swapChainDesc.StaticImage(false);       //ovrFalse
         
         PointerBuffer textureSetPB = BufferUtils.createPointerBuffer(1);
-        if (OVRGL.ovr_CreateTextureSwapChainGL(hmd, swapChainDesc, textureSetPB) != ovrSuccess) {
+        if (OVRGL.ovr_CreateTextureSwapChainGL(session, swapChainDesc, textureSetPB) != ovrSuccess) {
             throw new IllegalStateException("Failed to create Swap Texture Set");
         }
         chain = textureSetPB.get(0);
+        System.out.println("done chain creation");
         
-        
-        
-        // use same texture for both eye, see Viewport below
-        PointerBuffer colorTexturePB = BufferUtils.createPointerBuffer(2);
-        colorTexturePB.put(0, textureSetOne.address());
-        colorTexturePB.put(1, textureSetOne.address());
 
         // create FrameBuffers for Oculus SDK generated textures
         int chainLength = 0; 
         IntBuffer chainLengthB = BufferUtils.createIntBuffer(1);
-        ovr_GetTextureSwapChainLength(hmd, textureSetPB.address0(), chainLengthB);
+        ovr_GetTextureSwapChainLength(session, textureSetPB.get(0), chainLengthB);
         chainLength = chainLengthB.get();
+        System.out.println("chain length="+chainLength);
         
-        textures = new OVRGLTexture[chainLength][1];
-        fbuffers = new FrameBuffer[chainLength][1];
-        long hTextures = textureSetOne.Textures(chainLength).address();
+        //Frame Buffers to wrap ovr provided textures
+        fbuffers = new FrameBuffer[chainLength];
         for (int i = 0; i < chainLength; i++) {
-            OVRGLTexture texture = OVRGLTexture.create(hTextures + (eye * OVRGLTexture.SIZEOF));
-            textures[eye][0] = texture;
-            System.out.println("textureId="+texture.OGL().TexId()+", W="+texture.OGL().Header().TextureSize().w()+", "+texture.OGL().Header().TextureSize().h()+", texturePointer="+texture.address());
-            fbuffers[eye][0] = new FrameBuffer(texture.OGL().Header().TextureSize().w(), texture.OGL().Header().TextureSize().h(), texture.OGL().TexId());        //Texture size might not be what we asked for
+            IntBuffer textureIdB = BufferUtils.createIntBuffer(1);
+            OVRGL.ovr_GetTextureSwapChainBufferGL(session, chain, i, textureIdB);
+            int textureId = textureIdB.get();
+            System.out.println("textureId="+textureId);
+            fbuffers[i] = new FrameBuffer(textureW, textureH, textureId);
         }
 
         // eye viewports
-        OVRRecti viewport[] = new OVRRecti[2]; //should not matter which texture we measure, but they might be different to what was requested.
+        OVRRecti viewport[] = new OVRRecti[2]; //should not matter which texture we measure, but they might be different to what was requested... TODO
         for (int eye = 0; eye < 2; eye++) {
             viewport[eye] = OVRRecti.calloc();
             viewport[eye].Pos().x(0);
             viewport[eye].Pos().y(0);
-            viewport[eye].Size().w(textures[eye][0].OGL().Header().TextureSize().w());
-            viewport[eye].Size().h(textures[eye][0].OGL().Header().TextureSize().h());
+            viewport[eye].Size().w(textureW);
+            viewport[eye].Size().h(textureH);
         }
         
         //Layers
@@ -330,7 +321,7 @@ public final class RiftWindow130 {
         layer0.Header().Type(ovrLayerType_EyeFov);
         layer0.Header().Flags(ovrLayerFlag_TextureOriginAtBottomLeft);
         for (int eye = 0; eye < 2; eye++) {
-            layer0.ColorTexture(colorTexturePB);
+            layer0.ColorTexture(textureSetPB);
             layer0.Viewport(eye, viewport[eye]);
             layer0.Fov(eye, fovPorts[eye]);
             
@@ -348,20 +339,22 @@ public final class RiftWindow130 {
         
         // Create mirror texture and an FBO used to copy mirror texture to back buffer
         OVRMirrorTextureDesc mirrorDesc = OVRMirrorTextureDesc.calloc();
-        mirrorDesc.Format(OVR_FORMAT_R8G8B8A8_UNORM_SRGB)
+        mirrorDesc.Format(ovrFORMAT_R8G8B8A8_UNORM_SRGB);
         mirrorDesc.Width(windowW);
         mirrorDesc.Height(windowH);
+        System.out.println("create mirror "+windowW+","+windowH);
         //mirrorDesc.MiscFlags(value);
         
         PointerBuffer outMirrorTexture = BufferUtils.createPointerBuffer(1);
-        if (OVRGL.ovr_CreateMirrorTextureGL(hmd, mirrorDesc, outMirrorTexture) != ovrSuccess) {
+        if (OVRGL.ovr_CreateMirrorTextureGL(session, mirrorDesc, outMirrorTexture) != ovrSuccess) {
             throw new RuntimeException("Failed to create mirror texture");
         }
 
         // Configure the mirror read buffer
         IntBuffer texId = BufferUtils.createIntBuffer(1);
-        OVRGL.ovr_GetMirrorTextureBufferGL(hmd, outMirrorTexture.address0(), texId);
+        OVRGL.ovr_GetMirrorTextureBufferGL(session, outMirrorTexture.get(0), texId);
         int mirrorTextureId = texId.get();
+        System.out.println("mirror tex id="+mirrorTextureId);
         
         int mirrorFBId = ARBFramebufferObject.glGenFramebuffers();
         ARBFramebufferObject.glBindFramebuffer(ARBFramebufferObject.GL_READ_FRAMEBUFFER, mirrorFBId);
@@ -382,9 +375,9 @@ public final class RiftWindow130 {
         FloatBuffer fbP = BufferUtils.createFloatBuffer(16);
 
         
-        double ftiming = ovr_GetPredictedDisplayTime(hmd, 0);
+        double ftiming = ovr_GetPredictedDisplayTime(session, 0);
         OVRTrackingState hmdState = OVRTrackingState.malloc();
-        ovr_GetTrackingState(hmd, ftiming, true, hmdState);
+        ovr_GetTrackingState(session, ftiming, true, hmdState);
 
         //get head pose
         OVRPosef headPose = hmdState.HeadPose().ThePose();
@@ -405,17 +398,18 @@ public final class RiftWindow130 {
             int eye = eyeIndex;
             OVRPosef eyePose = eyePoses[eye];
             layer0.RenderPose(eye, eyePose);
-//            System.out.println("eye="+eye+", currentTPEIndex="+currentTPEIndex);
             
             IntBuffer currentIndexB = BufferUtils.createIntBuffer(1);
-            ovr_GetTextureSwapChainCurrentIndex(hmd, chain, currentIndexB);
+            ovr_GetTextureSwapChainCurrentIndex(session, chain, currentIndexB);
             int index = currentIndexB.get();
+          //  System.out.println("index="+index);
             
-            IntBuffer textureIdB = BufferUtils.createIntBuffer(1);
-            OVRGL.ovr_GetTextureSwapChainBufferGL(hmd, eye, index, textureIdB);
-            int textureId = textureIdB.get();
+//            IntBuffer textureIdB = BufferUtils.createIntBuffer(1);
+//            OVRGL.ovr_GetTextureSwapChainBufferGL(session, chain, index, textureIdB);
+//            int textureId = textureIdB.get();
+//            System.out.println("textureId="+textureId);
             
-            glBindTexture(GL_TEXTURE_2D, textureId);
+            fbuffers[index].activate();
          
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -456,15 +450,15 @@ public final class RiftWindow130 {
             
             //System.out.println(server.lon+","+server.lat);
             
-            //fbuffers[eye][currentTPEIndex].deactivate();      //TODO we do this once outside of loop for now...
+            fbuffers[index].deactivate();      //TODO we do this once outside of loop for now...
      //       System.out.println("1.5 error: "+glGetError());
         }
         ARBFramebufferObject.glBindFramebuffer(ARBFramebufferObject.GL_FRAMEBUFFER, 0);
         glBindTexture(GL_TEXTURE_2D, 0);
         
         
-        ovr_CommitTextureSwapChain(hmd, chain);
-        if (ovr_SubmitFrame(hmd, 0, null, layers) != ovrSuccess) {
+        ovr_CommitTextureSwapChain(session, chain);
+        if (ovr_SubmitFrame(session, 0, null, layers) != ovrSuccess) {
             System.out.println("failed submit");
         }
     }
@@ -486,27 +480,27 @@ public final class RiftWindow130 {
         }
         
         if (chain != 0) {
-            ovr_DestroyTextureSwapChain(hmd, chain);
+            ovr_DestroyTextureSwapChain(session, chain);
         }
-        ovr_Destroy(hmd);
+        ovr_Destroy(session);
         ovr_Shutdown();
     }
 
     public void toggleHUD() {
         perfHUD++;
         if (perfHUD == 1) {
-            ovr_SetInt(hmd, "PerfHudMode", (int)ovrPerfHud_PerfSummary);
+            ovr_SetInt(session, "PerfHudMode", (int)ovrPerfHud_PerfSummary);
         } else if (perfHUD == 2) {
-            ovr_SetInt(hmd, "PerfHudMode", (int)ovrPerfHud_LatencyTiming);
+            ovr_SetInt(session, "PerfHudMode", (int)ovrPerfHud_LatencyTiming);
         } else if (perfHUD == 3) {
-            ovr_SetInt(hmd, "PerfHudMode", (int)ovrPerfHud_AppRenderTiming);
+            ovr_SetInt(session, "PerfHudMode", (int)ovrPerfHud_AppRenderTiming);
         } else if (perfHUD == 4) {
-            ovr_SetInt(hmd, "PerfHudMode", (int)ovrPerfHud_CompRenderTiming);
+            ovr_SetInt(session, "PerfHudMode", (int)ovrPerfHud_CompRenderTiming);
         } else if (perfHUD == 5) {
-            ovr_SetInt(hmd, "PerfHudMode", (int)ovrPerfHud_VersionInfo);
+            ovr_SetInt(session, "PerfHudMode", (int)ovrPerfHud_VersionInfo);
         } else {
             perfHUD = 0;
-            ovr_SetInt(hmd, "PerfHudMode", (int)ovrPerfHud_Off);
+            ovr_SetInt(session, "PerfHudMode", (int)ovrPerfHud_Off);
         }
     }
 }
