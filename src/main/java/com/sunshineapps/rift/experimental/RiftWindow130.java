@@ -50,6 +50,7 @@ import static org.lwjgl.ovr.OVR.ovr_GetFovTextureSize;
 import static org.lwjgl.ovr.OVR.ovr_GetHmdDesc;
 import static org.lwjgl.ovr.OVR.ovr_GetPredictedDisplayTime;
 import static org.lwjgl.ovr.OVR.ovr_GetRenderDesc;
+import static org.lwjgl.ovr.OVR.ovr_GetSessionStatus;
 import static org.lwjgl.ovr.OVR.ovr_GetTextureSwapChainCurrentIndex;
 import static org.lwjgl.ovr.OVR.ovr_GetTextureSwapChainLength;
 import static org.lwjgl.ovr.OVR.ovr_GetTrackingState;
@@ -60,6 +61,7 @@ import static org.lwjgl.ovr.OVR.ovr_SetInt;
 import static org.lwjgl.ovr.OVR.ovr_Shutdown;
 import static org.lwjgl.ovr.OVR.ovr_SubmitFrame;
 import static org.lwjgl.ovr.OVRErrorCode.ovrSuccess;
+import static org.lwjgl.ovr.OVRErrorCode.ovrSuccess_NotVisible;
 import static org.lwjgl.ovr.OVRKeys.OVR_KEY_EYE_HEIGHT;
 import static org.lwjgl.ovr.OVRUtil.ovr_Detect;
 import static org.lwjgl.system.MemoryUtil.memASCII;
@@ -68,6 +70,7 @@ import static org.lwjgl.system.MemoryUtil.memFree;
 
 import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.joml.Matrix4f;
 import org.joml.Quaternionf;
@@ -89,6 +92,7 @@ import org.lwjgl.ovr.OVRMatrix4f;
 import org.lwjgl.ovr.OVRMirrorTextureDesc;
 import org.lwjgl.ovr.OVRPosef;
 import org.lwjgl.ovr.OVRRecti;
+import org.lwjgl.ovr.OVRSessionStatus;
 import org.lwjgl.ovr.OVRSizei;
 import org.lwjgl.ovr.OVRTextureSwapChainDesc;
 import org.lwjgl.ovr.OVRTrackingState;
@@ -98,10 +102,11 @@ import org.lwjgl.ovr.OVRVector3f;
 import com.sunshineapps.riftexample.thirdparty.FrameBuffer;
 
 public final class RiftWindow130 {
+    private static final boolean displayMirror = true;
     private final ClientCallback callback;
-    public static final boolean displayMirror = true;
     
     private long session;
+    private OVRSessionStatus sessionStatus;
     private OVRHmdDesc hmdDesc;
     private int resolutionW;                            //pixels rift
     private int resolutionH;
@@ -117,6 +122,7 @@ public final class RiftWindow130 {
     private int textureH;
     private Vector3f playerEyePos;
     private int perfHUD;
+    //private final AtomicBoolean renderingPaused = new AtomicBoolean(false);
     
     //OpenGL
     private FrameBuffer fbuffers[];
@@ -162,6 +168,7 @@ public final class RiftWindow130 {
         session = pHmd.get(0);
         memFree(pHmd);
         luid.free();
+        sessionStatus = OVRSessionStatus.calloc();
 
         // step 3 - hmdDesc queries
         System.out.println("step 3 - hmdDesc queries");
@@ -271,21 +278,22 @@ public final class RiftWindow130 {
         rightTextureSize.free();
         
         // TextureSets
-        OVRTextureSwapChainDesc swapChainDesc = OVRTextureSwapChainDesc.calloc();
-        swapChainDesc.Type(ovrTexture_2D);
-        swapChainDesc.ArraySize(1);
-        swapChainDesc.Format(ovrFORMAT_R8G8B8A8_UNORM_SRGB);
-        swapChainDesc.Width(textureW);
-        swapChainDesc.Height(textureH);
-        swapChainDesc.MipLevels(1);
-        swapChainDesc.SampleCount(1);
-        swapChainDesc.StaticImage(false);       //ovrFalse
+        OVRTextureSwapChainDesc swapChainDesc = OVRTextureSwapChainDesc.calloc()
+                .Type(ovrTexture_2D)
+                .ArraySize(1)
+                .Format(ovrFORMAT_R8G8B8A8_UNORM_SRGB)
+                .Width(textureW)
+                .Height(textureH)
+                .MipLevels(1)
+                .SampleCount(1)
+                .StaticImage(false); // ovrFalse
         
         PointerBuffer textureSetPB = BufferUtils.createPointerBuffer(1);
         if (OVRGL.ovr_CreateTextureSwapChainGL(session, swapChainDesc, textureSetPB) != ovrSuccess) {
-            throw new IllegalStateException("Failed to create Swap Texture Set");
+            throw new RuntimeException("Failed to create Swap Texture Set");
         }
         chain = textureSetPB.get(0);
+        swapChainDesc.free();
         System.out.println("done chain creation");
         
 
@@ -338,24 +346,22 @@ public final class RiftWindow130 {
         }
         
         // Create mirror texture and an FBO used to copy mirror texture to back buffer
-        OVRMirrorTextureDesc mirrorDesc = OVRMirrorTextureDesc.calloc();
-        mirrorDesc.Format(ovrFORMAT_R8G8B8A8_UNORM_SRGB);
-        mirrorDesc.Width(windowW);
-        mirrorDesc.Height(windowH);
-        System.out.println("create mirror "+windowW+","+windowH);
-        //mirrorDesc.MiscFlags(value);
+        OVRMirrorTextureDesc mirrorDesc = OVRMirrorTextureDesc.calloc()
+                .Format(ovrFORMAT_R8G8B8A8_UNORM_SRGB)
+                .Width(windowW)
+                .Height(windowH);
+        //.MiscFlags(value);
         
         PointerBuffer outMirrorTexture = BufferUtils.createPointerBuffer(1);
         if (OVRGL.ovr_CreateMirrorTextureGL(session, mirrorDesc, outMirrorTexture) != ovrSuccess) {
             throw new RuntimeException("Failed to create mirror texture");
         }
+        mirrorDesc.free();
 
         // Configure the mirror read buffer
         IntBuffer texId = BufferUtils.createIntBuffer(1);
         OVRGL.ovr_GetMirrorTextureBufferGL(session, outMirrorTexture.get(0), texId);
         int mirrorTextureId = texId.get();
-        System.out.println("mirror tex id="+mirrorTextureId);
-        
         int mirrorFBId = ARBFramebufferObject.glGenFramebuffers();
         ARBFramebufferObject.glBindFramebuffer(ARBFramebufferObject.GL_READ_FRAMEBUFFER, mirrorFBId);
         ARBFramebufferObject.glFramebufferTexture2D(ARBFramebufferObject.GL_READ_FRAMEBUFFER, ARBFramebufferObject.GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, mirrorTextureId, 0);
@@ -367,6 +373,13 @@ public final class RiftWindow130 {
 
    //TODO move object creation out of loop!
     public void render() {
+        ovr_GetSessionStatus(session, sessionStatus);
+        if  (!sessionStatus.IsVisible() || sessionStatus.ShouldQuit()) {
+            return;
+        }
+        if (sessionStatus.ShouldRecenter()) {
+            ovr_RecenterTrackingOrigin(session);
+        }
         
         Matrix4f mat = new Matrix4f();
         FloatBuffer fb = BufferUtils.createFloatBuffer(16);
@@ -374,7 +387,6 @@ public final class RiftWindow130 {
         Matrix4f matP = new Matrix4f();
         FloatBuffer fbP = BufferUtils.createFloatBuffer(16);
 
-        
         double ftiming = ovr_GetPredictedDisplayTime(session, 0);
         OVRTrackingState hmdState = OVRTrackingState.malloc();
         ovr_GetTrackingState(session, ftiming, true, hmdState);
@@ -384,13 +396,14 @@ public final class RiftWindow130 {
         hmdState.free();
 
         //build view offsets struct
-        OVRVector3f.Buffer hmdToEyeViewOffsets = OVRVector3f.calloc(2);
-        hmdToEyeViewOffsets.put(0, eyeRenderDesc[ovrEye_Left].HmdToEyeOffset());
-        hmdToEyeViewOffsets.put(1, eyeRenderDesc[ovrEye_Right].HmdToEyeOffset());
+        OVRVector3f.Buffer hmdToEyeOffsets = OVRVector3f.calloc(2);
+        hmdToEyeOffsets.put(0, eyeRenderDesc[ovrEye_Left].HmdToEyeOffset());
+        hmdToEyeOffsets.put(1, eyeRenderDesc[ovrEye_Right].HmdToEyeOffset());
         
         //calculate eye poses
         OVRPosef.Buffer outEyePoses = OVRPosef.create(2);
-        OVRUtil.ovr_CalcEyePoses(headPose, hmdToEyeViewOffsets, outEyePoses);
+        OVRUtil.ovr_CalcEyePoses(headPose, hmdToEyeOffsets, outEyePoses);
+        hmdToEyeOffsets.free();
         eyePoses[ovrEye_Left] = outEyePoses.get(0);
         eyePoses[ovrEye_Right] = outEyePoses.get(1);
 
@@ -404,15 +417,9 @@ public final class RiftWindow130 {
             int index = currentIndexB.get();
           //  System.out.println("index="+index);
             
-//            IntBuffer textureIdB = BufferUtils.createIntBuffer(1);
-//            OVRGL.ovr_GetTextureSwapChainBufferGL(session, chain, index, textureIdB);
-//            int textureId = textureIdB.get();
-//            System.out.println("textureId="+textureId);
-            
             fbuffers[index].activate();
          
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
            
             glViewport(0, 0, textureW, textureH);
             
@@ -441,8 +448,6 @@ public final class RiftWindow130 {
          
             mat.translate(playerEyePos);    //back to 'floor' height
             
-
-            
             callback.drawScene(mat);
 
             mat.get(fb);
@@ -458,8 +463,10 @@ public final class RiftWindow130 {
         
         
         ovr_CommitTextureSwapChain(session, chain);
-        if (ovr_SubmitFrame(session, 0, null, layers) != ovrSuccess) {
+        int result = ovr_SubmitFrame(session, 0, null, layers);
+        if (result != ovrSuccess) {
             System.out.println("failed submit");
+            //or we just stop rendering with this one, but when do we restart
         }
     }
 
@@ -478,6 +485,9 @@ public final class RiftWindow130 {
         for (int eye = 0; eye < 2; eye++) {
             eyeRenderDesc[eye].free();
         }
+
+        layer0.free();
+        sessionStatus.free();
         
         if (chain != 0) {
             ovr_DestroyTextureSwapChain(session, chain);
